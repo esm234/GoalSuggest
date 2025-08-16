@@ -1,37 +1,79 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-فئة البوت الرئيسية لمعالجة الاقتراحات
-Main Bot class for handling suggestions
+بوت تليجرام بسيط لاستقبال الاقتراحات
+Simple Telegram bot for receiving suggestions
 """
 
-import logging
-import html
 import os
-import asyncio
-from telegram._update import Update
-from telegram._bot import Bot
-from telegram._message import Message
+import time
+import json
+import logging
+import requests
+from typing import Optional, Dict, Any
 
-class SuggestionBot:
-    def __init__(self, bot_token: str, admin_group_id: int):
+class SimpleTelegramBot:
+    def __init__(self, token: str, admin_group_id: str):
         """
         تهيئة البوت
-        
-        Args:
-            bot_token (str): رمز البوت من BotFather
-            admin_group_id (int): معرف مجموعة الإدارة
+        Initialize the bot
         """
-        self.bot_token = bot_token
+        self.token = token
         self.admin_group_id = admin_group_id
+        self.base_url = f"https://api.telegram.org/bot{token}"
+        self.last_update_id = 0
         self.logger = logging.getLogger(__name__)
-        self.bot = Bot(token=bot_token)
-        self.running = True
+        
+    def get_updates(self) -> list:
+        """
+        الحصول على التحديثات من تليجرام
+        Get updates from Telegram
+        """
+        try:
+            url = f"{self.base_url}/getUpdates"
+            params = {
+                'offset': self.last_update_id + 1,
+                'timeout': 30,
+                'allowed_updates': ['message']
+            }
+            
+            response = requests.get(url, params=params, timeout=35)
+            
+            if response.status_code == 200:
+                data = response.json()
+                if data['ok']:
+                    return data['result']
+            
+            return []
+            
+        except Exception as e:
+            self.logger.error(f"خطأ في الحصول على التحديثات: {e}")
+            return []
     
-    async def _start_command(self, update: Update):
+    def send_message(self, chat_id: str, text: str, parse_mode: str = "HTML") -> bool:
+        """
+        إرسال رسالة
+        Send a message
+        """
+        try:
+            url = f"{self.base_url}/sendMessage"
+            data = {
+                'chat_id': chat_id,
+                'text': text,
+                'parse_mode': parse_mode
+            }
+            
+            response = requests.post(url, data=data, timeout=10)
+            return response.status_code == 200 and response.json().get('ok', False)
+            
+        except Exception as e:
+            self.logger.error(f"خطأ في إرسال الرسالة: {e}")
+            return False
+    
+    def handle_start_command(self, chat_id: str, user_info: Dict[str, Any]) -> None:
         """
         معالج أمر /start
-        Handler for /start command
+        Handle /start command
         """
         welcome_message = (
             "👋 أهلاً بيك!\n\n"
@@ -39,153 +81,152 @@ class SuggestionBot:
             "سيتم إرسال اقتراحك مباشرة للمسؤولين 📩"
         )
         
-        try:
-            await self.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text=welcome_message,
-                parse_mode='HTML'
-            )
-            
-            # تسجيل استخدام أمر البداية
-            user = update.effective_user
-            self.logger.info(
-                f"مستخدم جديد بدأ البوت: {user.full_name} (@{user.username}) - ID: {user.id}"
-            )
-            
-        except Exception as e:
-            self.logger.error(f"خطأ في معالجة أمر /start: {e}")
-    
-    async def _handle_suggestion(self, update: Update):
-        """
-        معالج الاقتراحات من المستخدمين
-        Handler for user suggestions
-        """
-        user = update.effective_user
-        message = update.message
+        self.send_message(chat_id, welcome_message)
         
+        # تسجيل المستخدم الجديد
+        user_name = user_info.get('first_name', 'غير معروف')
+        username = user_info.get('username', 'بدون معرف')
+        user_id = user_info.get('id', 'غير معروف')
+        
+        self.logger.info(f"مستخدم جديد بدأ البوت: {user_name} (@{username}) - ID: {user_id}")
+    
+    def handle_suggestion(self, chat_id: str, message_text: str, user_info: Dict[str, Any]) -> None:
+        """
+        معالج الاقتراحات
+        Handle suggestions
+        """
         try:
-            # إنشاء رسالة الاقتراح للإدارة
-            suggestion_text = html.escape(message.text)
-            user_info = self._format_user_info(user)
+            # معلومات المستخدم
+            user_name = user_info.get('first_name', 'غير معروف')
+            last_name = user_info.get('last_name', '')
+            if last_name:
+                user_name += f" {last_name}"
             
+            username = user_info.get('username', 'بدون معرف')
+            user_id = user_info.get('id', 'غير معروف')
+            
+            # رسالة للإدارة
             admin_message = (
                 "📩 <b>اقتراح جديد</b>\n"
                 "━━━━━━━━━━━━━━━━━━━━\n\n"
-                f"💭 <b>الاقتراح:</b>\n{suggestion_text}\n\n"
-                f"👤 <b>معلومات المستخدم:</b>\n{user_info}\n"
+                f"💭 <b>الاقتراح:</b>\n{message_text}\n\n"
+                f"👤 <b>معلومات المستخدم:</b>\n"
+                f"الاسم: {user_name}\n"
+                f"المعرف: @{username}\n"
+                f"ID: <code>{user_id}</code>\n"
+                f"الرابط: <a href='tg://user?id={user_id}'>الملف الشخصي</a>\n"
                 "━━━━━━━━━━━━━━━━━━━━"
             )
             
-            # إرسال الاقتراح لمجموعة الإدارة
-            await self.bot.send_message(
-                chat_id=self.admin_group_id,
-                text=admin_message,
-                parse_mode='HTML'
-            )
-            
-            # رد الشكر للمستخدم
-            thank_you_message = "✅ تم إرسال اقتراحك للمسؤولين، شكراً لك!"
-            await self.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text=thank_you_message
-            )
-            
-            # تسجيل العملية
-            self.logger.info(
-                f"تم إرسال اقتراح من {user.full_name} (@{user.username}) - ID: {user.id}"
-            )
-            
+            # إرسال للإدارة
+            if self.send_message(self.admin_group_id, admin_message):
+                # رد الشكر للمستخدم
+                thank_message = "✅ تم إرسال اقتراحك للمسؤولين، شكراً لك!"
+                self.send_message(chat_id, thank_message)
+                
+                # تسجيل العملية
+                self.logger.info(f"تم إرسال اقتراح من {user_name} (@{username}) - ID: {user_id}")
+            else:
+                # خطأ في الإرسال
+                error_message = "❌ عذراً، حدث خطأ أثناء إرسال اقتراحك. يرجى المحاولة مرة أخرى."
+                self.send_message(chat_id, error_message)
+                
         except Exception as e:
             self.logger.error(f"خطأ في معالجة الاقتراح: {e}")
-            
-            # إرسال رسالة خطأ للمستخدم
-            error_message = (
-                "❌ عذراً، حدث خطأ أثناء إرسال اقتراحك.\n"
-                "يرجى المحاولة مرة أخرى لاحقاً."
-            )
-            
-            try:
-                await self.bot.send_message(
-                    chat_id=update.effective_chat.id,
-                    text=error_message
-                )
-            except:
-                pass  # في حالة فشل إرسال رسالة الخطأ أيضاً
+            error_message = "❌ عذراً، حدث خطأ أثناء إرسال اقتراحك. يرجى المحاولة مرة أخرى."
+            self.send_message(chat_id, error_message)
     
-    def _format_user_info(self, user) -> str:
+    def process_update(self, update: Dict[str, Any]) -> None:
         """
-        تنسيق معلومات المستخدم
-        Format user information
-        
-        Args:
-            user: كائن المستخدم من تليجرام
-            
-        Returns:
-            str: معلومات المستخدم منسقة
+        معالجة التحديث
+        Process update
         """
-        user_info_parts = []
-        
-        # الاسم
-        if user.full_name:
-            user_info_parts.append(f"الاسم: {html.escape(user.full_name)}")
-        
-        # اسم المستخدم
-        if user.username:
-            user_info_parts.append(f"المعرف: @{user.username}")
-        
-        # معرف المستخدم
-        user_info_parts.append(f"ID: <code>{user.id}</code>")
-        
-        # رابط الملف الشخصي
-        user_info_parts.append(f"الرابط: <a href='tg://user?id={user.id}'>الملف الشخصي</a>")
-        
-        return "\n".join(user_info_parts)
-    
-    async def process_update(self, update: Update):
-        """معالج التحديثات الرئيسي"""
         try:
-            # تجاهل الرسائل من المجموعات (فقط الرسائل الخاصة)
-            if update.effective_chat.type != 'private':
+            message = update.get('message')
+            if not message:
                 return
             
+            chat = message.get('chat', {})
+            chat_type = chat.get('type', '')
+            chat_id = str(chat.get('id', ''))
+            
+            # تجاهل رسائل المجموعات
+            if chat_type != 'private':
+                return
+            
+            message_text = message.get('text', '')
+            user_info = message.get('from', {})
+            
             # معالجة أمر /start
-            if update.message and update.message.text and update.message.text.startswith('/start'):
-                await self._start_command(update)
-            # معالجة النصوص العادية
-            elif update.message and update.message.text and not update.message.text.startswith('/'):
-                await self._handle_suggestion(update)
+            if message_text.startswith('/start'):
+                self.handle_start_command(chat_id, user_info)
+            # معالجة الاقتراحات
+            elif message_text and not message_text.startswith('/'):
+                self.handle_suggestion(chat_id, message_text, user_info)
                 
         except Exception as e:
             self.logger.error(f"خطأ في معالجة التحديث: {e}")
     
-    async def get_updates(self):
-        """الحصول على التحديثات من تليجرام"""
-        offset = 0
-        while self.running:
+    def run(self) -> None:
+        """
+        تشغيل البوت
+        Run the bot
+        """
+        self.logger.info("✅ البوت جاهز للعمل!")
+        
+        while True:
             try:
-                updates = await self.bot.get_updates(
-                    offset=offset,
-                    timeout=30,
-                    allowed_updates=["message"]
-                )
+                updates = self.get_updates()
                 
                 for update in updates:
-                    await self.process_update(update)
-                    offset = update.update_id + 1
+                    self.last_update_id = update['update_id']
+                    self.process_update(update)
+                
+                if not updates:
+                    time.sleep(1)
                     
+            except KeyboardInterrupt:
+                self.logger.info("⏹️ تم إيقاف البوت بواسطة المستخدم")
+                break
             except Exception as e:
-                self.logger.error(f"خطأ في الحصول على التحديثات: {e}")
-                await asyncio.sleep(5)
+                self.logger.error(f"❌ خطأ في تشغيل البوت: {e}")
+                time.sleep(5)
+        
+        self.logger.info("👋 تم إغلاق البوت")
+
+
+def main():
+    """تشغيل البوت الرئيسي"""
+    # إعداد التسجيل
+    logging.basicConfig(
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        level=logging.INFO,
+        handlers=[
+            logging.FileHandler('bot.log', encoding='utf-8'),
+            logging.StreamHandler()
+        ]
+    )
     
-    def run(self):
-        """تشغيل البوت"""
-        try:
-            self.logger.info("✅ البوت جاهز للعمل!")
-            asyncio.run(self.get_updates())
-        except KeyboardInterrupt:
-            self.logger.info("⏹️ تم إيقاف البوت بواسطة المستخدم")
-            self.running = False
-        except Exception as e:
-            self.logger.error(f"❌ خطأ في تشغيل البوت: {e}")
-        finally:
-            self.logger.info("👋 تم إغلاق البوت")
+    logger = logging.getLogger(__name__)
+    
+    # التحقق من متغيرات البيئة
+    bot_token = os.getenv("BOT_TOKEN")
+    admin_group_id = os.getenv("ADMIN_GROUP_ID")
+    
+    if not bot_token:
+        logger.error("❌ BOT_TOKEN غير موجود في متغيرات البيئة")
+        return
+    
+    if not admin_group_id:
+        logger.error("❌ ADMIN_GROUP_ID غير موجود في متغيرات البيئة")
+        return
+    
+    logger.info("🚀 بدء تشغيل البوت...")
+    
+    # إنشاء وتشغيل البوت
+    bot = SimpleTelegramBot(bot_token, admin_group_id)
+    bot.run()
+
+
+if __name__ == '__main__':
+    main()
